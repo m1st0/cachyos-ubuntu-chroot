@@ -18,12 +18,22 @@ if (( EUID != 0 )); then
     exec sudo -- "$0" "$@"
 fi
 
+# Severe issues existed with namespace mounts not releasing including Snap and
+# systemd-resolvd. Therefore attempting to make sure we stay isolated with a
+# private namespace.
+if [[ -z ${IN_PRIVATE_MOUNT_NS-} ]]; then
+    export IN_PRIVATE_MOUNT_NS=1
+    exec unshare --mount --fork --propagation private "$0" "$@"
+fi
+
+mount --make-rprivate /
+
 SCRIPT_DIR="${0:A:h}"
 source "$SCRIPT_DIR/vendor/tput_shell_colorize/tput_shell_colorize.sh"
 source "$SCRIPT_DIR/cachyos_partitions.conf"
 
 # Verify required configuration variables.
-required_variables=(
+REQUIRED_VARIABLES=(
     CACHYOS_MOUNT
     CACHYOS_MAIN
     CACHYOS_BOOT
@@ -31,7 +41,7 @@ required_variables=(
     CACHYOS_MAPPER
 )
 
-for variable_name in "${required_variables[@]}"; do
+for variable_name in "${REQUIRED_VARIABLES[@]}"; do
     if [[ -z "${(P)variable_name:-}" ]]; then
         messenger_end "Required variable is missing or empty: $variable_name"
         exit 1
@@ -90,6 +100,92 @@ mount_bind_tree() {
     messenger_std "Binding $source to $target ..."
     mount --rbind "$source" "$target"
     mount --make-rslave "$target"
+}
+
+teardown() {
+    local variable_name
+
+    for variable_name in "${REQUIRED_VARIABLES[@]}"; do
+        if [[ -z "${(P)variable_name:-}" ]]; then
+            messenger_end "Required variable is missing or empty: $variable_name"
+            return 1
+        fi
+    done
+
+    # Refuse dangerous or ambiguous mount targets.
+    if [[ "$CACHYOS_MOUNT" != /* || "$CACHYOS_MOUNT" == "/" ]]; then
+        messenger_end "Unsafe CachyOS mount target: '$CACHYOS_MOUNT'"
+        return 1
+    fi
+
+    if [[ "$CACHYOS_MOUNT" == "/mnt" || "$CACHYOS_MOUNT" == "/home" ]]; then
+        messenger_end "Refusing to recursively unmount broad directory: '$CACHYOS_MOUNT'"
+        return 1
+    fi
+
+    if ! mountpoint -q -- "$CACHYOS_MOUNT"; then
+        messenger_end "CachyOS mount target is not mounted: '$CACHYOS_MOUNT'"
+        return 1
+    fi
+
+    messenger_std "Unmounting everything beneath $CACHYOS_MOUNT"
+
+    # First remove the visible CachyOS mount tree. This unmounts the main
+    # root subvolume (@) and the other visible subvolume/system mounts.
+    umount --recursive -- "$CACHYOS_MOUNT"
+
+    # The main root mount may have hidden the temporary subvolume-id=5 mount.
+    # Check again after removing @, because .btrfs-top may now be visible.
+    BTRFS_TOP_MOUNT="${CACHYOS_MOUNT%/}/.btrfs-top"
+
+    if mountpoint -q -- "$BTRFS_TOP_MOUNT"; then
+        messenger_std "Unmounting hidden Btrfs top-level mount: $BTRFS_TOP_MOUNT"
+        umount --recursive -- "$BTRFS_TOP_MOUNT"
+    fi
+
+    # Confirm that neither the main mount nor the temporary top-level mount
+    # remains active.
+    if mountpoint -q -- "$CACHYOS_MOUNT"; then
+        messenger_end "CachyOS mount is still active: '$CACHYOS_MOUNT'"
+        return 1
+    fi
+
+    if mountpoint -q -- "$BTRFS_TOP_MOUNT"; then
+        messenger_end "Btrfs top-level mount is still active: '$BTRFS_TOP_MOUNT'"
+        return 1
+    fi
+
+    # Close the encrypted mapping only if it is currently open.
+    if cryptsetup status "$CACHYOS_MAPPER" >/dev/null 2>&1; then
+        messenger_std "Closing encrypted mapping: $CACHYOS_MAPPER"
+        cryptsetup close "$CACHYOS_MAPPER"
+    else
+        messenger_std "Encrypted mapping is already closed: $CACHYOS_MAPPER"
+    fi
+
+    messenger_end "CachyOS chroot teardown complete."
+}
+
+# Teardown setup against private namespace and failures.
+CLEANUP_STATUS=0
+
+TRAPEXIT() {
+    local ORIGINAL_STATUS=$?
+
+    if (( ! CLEANUP_STATUS )); then
+        CLEANUP_STATUS=1
+        teardown
+    fi
+
+    return $ORIGINAL_STATUS
+}
+
+TRAPINT() {
+    exit 130
+}
+
+TRAPTERM() {
+    exit 143
 }
 
 # Validate the configured block device before changing mounts.
@@ -170,5 +266,33 @@ findmnt -R -- "$CACHYOS_MOUNT"
 messenger_std "Follow instructions to undo chroot after exit."
 messenger_std "Starting chroot..."
 
-chroot "$CACHYOS_MOUNT" /usr/bin/zsh
+while :; do
+    linefeed
+    messenger_std "  r) Re-enter CachyOS chroot"
+    messenger_std "  s) Open shell outside chroot"
+    messenger_std "  t) Teardown and exit"
+    print -n "> "
 
+    if ! read -r choice; then
+        exit 130
+    fi
+
+    case "$choice" in
+        r|R)
+            setopt local_options no_err_exit
+            chroot "$CACHYOS_MOUNT" /usr/bin/zsh
+            ;;
+
+        s|S)
+            /usr/bin/env zsh
+            ;;
+
+        t|T)
+            exit 0
+            ;;
+
+        *)
+            messenger_end "Invalid choice."
+            ;;
+    esac
+done
