@@ -13,10 +13,22 @@ SCRIPT_DIR="${0:A:h}"
 source "$SCRIPT_DIR/vendor/tput_shell_colorize/tput_shell_colorize.sh"
 source "$SCRIPT_DIR/cachyos_partitions.conf"
 
-# Leave CachyOS directories
-cd ~
+# Verify safety of destructive operations.
+if [[ -z "$CACHYOS_MOUNT" || "$CACHYOS_MOUNT" == "/" ]]; then
+    messenger_end "ERROR: CACHYOS_MOUNT is unset or unsafe: '$CACHYOS_MOUNT' ."
+    exit 1
+fi
 
-# Undo chroot after exit
+if ! mountpoint -q "$CACHYOS_MOUNT"; then
+    messenger_std "ERROR: '$CACHYOS_MOUNT' is not mounted."
+    messenger_end "Refusing to run teardown."
+    exit 1
+fi
+
+# Leave CachyOS directories if necessary.
+cd "$SCRIPT_DIR"
+
+# Undo chroot after exit.
 sudo rm -rfi "$CACHYOS_MOUNT/tmp/user/0"
 sudo rm -rfi "$CACHYOS_MOUNT/tmp/user/"
 

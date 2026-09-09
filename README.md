@@ -4,14 +4,14 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # CachyOS Ubuntu CHROOT
 
-A minimal tool set to mount, prepare, and enter a CachyOS environment from an Ubuntu live session (or installed Ubuntu host) without needing `arch-install-scripts`.
+A minimal toolset to mount, prepare, and enter a CachyOS environment from an Ubuntu live session (or installed Ubuntu host) without needing `arch-install-scripts`.
 
 Copyright © 2026 Maulik Mistry  
 Licensed under the [Apache License 2.0](LICENSE.txt).
 
 ## Overview
 
-While CachyOS provides `cachy-chroot` for Arch-based live environments, setting up a proper chroot from Ubuntu often requires extra dependencies like `arch-install-scripts`. This project provides standalone scripts to quickly mount BTRFS subvolumes, set up pseudo-filesystems (`/dev`, `/proc`, `/sys`), and manage teardown safely.
+While CachyOS provides `cachy-chroot` for Arch-based live environments, setting up a proper chroot from Ubuntu would then require extra dependencies like `arch-install-scripts`. This project provides standalone scripts to quickly mount BTRFS subvolumes, set up pseudo-filesystems (`/dev`, `/proc`, `/sys`), and manage teardown safely.
 
 ## Features
 
@@ -53,7 +53,7 @@ While CachyOS provides `cachy-chroot` for Arch-based live environments, setting 
 4. **Enter the CHROOT environment:**
 
    ```bash
-   sudo ./cachyos_ubuntu_chroot.zsh
+   ./cachyos_ubuntu_chroot.zsh
    ```
 
 5. **Teardown and unmount:**
@@ -61,7 +61,7 @@ While CachyOS provides `cachy-chroot` for Arch-based live environments, setting 
    After exiting the chroot session, run the teardown script to safely unmount all partitions:
 
    ```bash
-   sudo ./cachyos_teardown_chroot.zsh
+   ./cachyos_teardown_chroot.zsh
    ```
 
 ## Support
