@@ -9,44 +9,84 @@
 #                       https://venmo.com/code?user_id=3319592654995456106&created=1753283702
 
 
+setopt ERR_EXIT
+setopt PIPE_FAIL
+setopt NO_UNSET
+
+# Re-execute the complete script as root.
+if (( EUID != 0 )); then
+    exec sudo -- "$0" "$@"
+fi
+
 SCRIPT_DIR="${0:A:h}"
 source "$SCRIPT_DIR/vendor/tput_shell_colorize/tput_shell_colorize.sh"
 source "$SCRIPT_DIR/cachyos_partitions.conf"
 
-# Verify safety of destructive operations.
-if [[ -z "$CACHYOS_MOUNT" || "$CACHYOS_MOUNT" == "/" ]]; then
-    messenger_end "ERROR: CACHYOS_MOUNT is unset or unsafe: '$CACHYOS_MOUNT' ."
+# Check required configuration variables before using them.
+typeset -a required_variables=(
+    CACHYOS_MOUNT
+    CACHYOS_MAIN
+    CACHYOS_BOOT
+    CACHYOS_LUKS
+    CACHYOS_MAPPER
+)
+
+for variable_name in "${required_variables[@]}"; do
+    if [[ -z "${(P)variable_name:-}" ]]; then
+        messenger_end "Required variable is missing or empty: $variable_name"
+        exit 1
+    fi
+done
+
+# Refuse dangerous or ambiguous mount targets.
+if [[ "$CACHYOS_MOUNT" != /* || "$CACHYOS_MOUNT" == "/" ]]; then
+    messenger_end "Unsafe CachyOS mount target: '$CACHYOS_MOUNT'"
     exit 1
 fi
 
-if ! mountpoint -q "$CACHYOS_MOUNT"; then
-    messenger_std "ERROR: '$CACHYOS_MOUNT' is not mounted."
-    messenger_end "Refusing to run teardown."
+if [[ "$CACHYOS_MOUNT" == "/mnt" || "$CACHYOS_MOUNT" == "/home" ]]; then
+    messenger_end "Refusing to recursively unmount broad directory: '$CACHYOS_MOUNT'"
     exit 1
 fi
 
-# Leave CachyOS directories if necessary.
-cd "$SCRIPT_DIR"
+if ! mountpoint -q -- "$CACHYOS_MOUNT"; then
+    messenger_end "CachyOS mount target is not mounted: '$CACHYOS_MOUNT'"
+    exit 1
+fi
 
-# Undo chroot after exit.
-sudo rm -rfi "$CACHYOS_MOUNT/tmp/user/0"
-sudo rm -rfi "$CACHYOS_MOUNT/tmp/user/"
+messenger_std "Unmounting everything beneath $CACHYOS_MOUNT"
 
-sudo umount "$CACHYOS_MOUNT/boot/efi"
+# First remove the visible CachyOS mount tree. This unmounts the main
+# root subvolume (@) and the other visible subvolume/system mounts.
+umount --recursive -- "$CACHYOS_MOUNT"
 
-sudo umount -R "$CACHYOS_MOUNT/dev"
-sudo umount -R "$CACHYOS_MOUNT/proc"
-sudo umount -R "$CACHYOS_MOUNT/run"
+# The main root mount may have hidden the temporary subvolume-id=5 mount.
+# Check again after removing @, because .btrfs-top may now be visible.
+BTRFS_TOP_MOUNT="${CACHYOS_MOUNT%/}/.btrfs-top"
 
-sudo umount -R "$CACHYOS_MOUNT/home"
-sudo umount -R "$CACHYOS_MOUNT/root"
-sudo umount -R "$CACHYOS_MOUNT/srv"
-sudo umount -R "$CACHYOS_MOUNT/var/cache"
-sudo umount -R "$CACHYOS_MOUNT/var/tmp"
-sudo umount -R "$CACHYOS_MOUNT/var/log"
+if mountpoint -q -- "$BTRFS_TOP_MOUNT"; then
+    messenger_std "Unmounting hidden Btrfs top-level mount: $BTRFS_TOP_MOUNT"
+    umount --recursive -- "$BTRFS_TOP_MOUNT"
+fi
 
-sudo umount "$CACHYOS_MOUNT"
+# Confirm that neither the main mount nor the temporary top-level mount
+# remains active.
+if mountpoint -q -- "$CACHYOS_MOUNT"; then
+    messenger_end "CachyOS mount is still active: '$CACHYOS_MOUNT'"
+    exit 1
+fi
 
-sudo cryptsetup close "$CACHYOS_MAPPER"
+if mountpoint -q -- "$BTRFS_TOP_MOUNT"; then
+    messenger_end "Btrfs top-level mount is still active: '$BTRFS_TOP_MOUNT'"
+    exit 1
+fi
 
-messenger_end "Check for umount and cryptsetup errors. Script done."
+# Close the encrypted mapping only if it is currently open.
+if cryptsetup status "$CACHYOS_MAPPER" >/dev/null 2>&1; then
+    messenger_std "Closing encrypted mapping: $CACHYOS_MAPPER"
+    cryptsetup close "$CACHYOS_MAPPER"
+else
+    messenger_std "Encrypted mapping is already closed: $CACHYOS_MAPPER"
+fi
+
+messenger_end "CachyOS chroot teardown complete."
