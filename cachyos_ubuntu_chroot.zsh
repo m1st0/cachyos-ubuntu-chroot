@@ -284,7 +284,7 @@ while :; do
             ;;
 
         s|S)
-            /usr/bin/env zsh
+            /usr/bin/sudo -u "#$SUDO_UID" -H /usr/bin/zsh -i
             ;;
 
         t|T)
