@@ -77,11 +77,6 @@ mount_btrfs_subvolume() {
         return 0
     fi
 
-    if ! btrfs subvolume show "$BTRFS_TOP/$subvol" >/dev/null 2>&1; then
-        messenger_std "Skipping missing subvolume: $subvol"
-        return 0
-    fi
-
     messenger_std "Mounting subvolume $subvol at $target ..."
     mount -o "subvol=$subvol" "$CACHYOS_MAIN" "$target"
 }
@@ -212,20 +207,8 @@ if ! is_mounted "$BTRFS_TOP"; then
     mount -o subvolid=5 "$CACHYOS_MAIN" "$BTRFS_TOP"
 fi
 
-# Mount the CachyOS root subvolume first.
-if ! is_mounted "$CACHYOS_MOUNT"; then
-    messenger_std "Mounting CachyOS root subvolume..."
-    mount -o subvol=@ "$CACHYOS_MAIN" "$CACHYOS_MOUNT"
-fi
-
-# Keep only subvolumes that are actually present in the CachyOS installation.
-#
-# Verify these against:
-#
-#   grep -E '^[^#].*[[:space:]]btrfs[[:space:]]' \
-#       "$CACHYOS_MOUNT/etc/fstab"
-#
-# Missing entries are skipped automatically.
+# Determine which CachyOS subvolumes actually exist while the Btrfs
+# top-level subvolume is visible.
 typeset -a CACHYOS_SUBVOLUMES=(
     "@home:$CACHYOS_MOUNT/home"
     "@root:$CACHYOS_MOUNT/root"
@@ -235,12 +218,39 @@ typeset -a CACHYOS_SUBVOLUMES=(
     "@var/log:$CACHYOS_MOUNT/var/log"
 )
 
+typeset -a EXISTING_CACHYOS_SUBVOLUMES=()
+
+# Keep only subvolumes that are actually present in the CachyOS installation.
+#
+# Verifiable by:
+#
+#   grep -E '^[^#].*[[:space:]]btrfs[[:space:]]' \
+#       "$CACHYOS_MOUNT/etc/fstab"
+#
 for entry in "${CACHYOS_SUBVOLUMES[@]}"; do
+    subvol="${entry%%:*}"
+
+    if btrfs subvolume show "$BTRFS_TOP/$subvol" >/dev/null 2>&1; then
+        EXISTING_CACHYOS_SUBVOLUMES+=("$entry")
+    else
+        messenger_std "Skipping missing subvolume: $subvol"
+    fi
+done
+
+# Mount the CachyOS root subvolume first.
+if ! is_mounted "$CACHYOS_MOUNT"; then
+    messenger_std "Mounting CachyOS root subvolume..."
+    mount -o subvol=@ "$CACHYOS_MAIN" "$CACHYOS_MOUNT"
+fi
+
+# Mount the subvolumes that were found above.
+for entry in "${EXISTING_CACHYOS_SUBVOLUMES[@]}"; do
     subvol="${entry%%:*}"
     target="${entry#*:}"
 
     mount_btrfs_subvolume "$subvol" "$target"
 done
+
 
 # Mount the EFI system partition.
 mkdir -p -- "$CACHYOS_MOUNT/boot/efi"
